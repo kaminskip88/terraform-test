@@ -1,4 +1,4 @@
-module terraform-test
+module github.com/kaminskip88/terraform-test
 
 go 1.26
 

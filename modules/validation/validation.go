@@ -5,8 +5,9 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"terraform-test/modules/basic"
 	"testing"
+
+	"github.com/kaminskip88/terraform-test/modules/basic"
 
 	"github.com/gruntwork-io/terratest/modules/docker"
 	"github.com/gruntwork-io/terratest/modules/terraform"
