@@ -153,11 +153,9 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 		// Populate scenario folder if necessary
 		var copyRequired bool
 		v, ok := os.LookupEnv("TF_TEST_STAGE")
-		if ok {
-			if v == "build_scenario" {
-				copyRequired = true
-				log.Info().Msg("TF_TEST_STAGE=build_scenario building scenario dir")
-			}
+		if ok && v == "build_scenario" {
+			copyRequired = true
+			log.Info().Msg("TF_TEST_STAGE=build_scenario building scenario dir")
 		} else {
 			f, err := os.ReadDir(scenarioPath)
 			require.NoError(t, err)
