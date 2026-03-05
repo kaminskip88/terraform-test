@@ -131,6 +131,7 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 	scenarioRunDir := filepath.Join(scenarioPath, conf.RunDir)
 
 	tfOpts := &terraform.Options{
+		TerraformBinary: "tofu",
 		TerraformDir: scenarioRunDir,
 		// Vars:         tfVars,
 	}
