@@ -1,7 +1,6 @@
 package basic
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,40 +65,31 @@ func Run(t *testing.T, conf *Conf, scenarios []Scenario, vals []Validation) {
 			Logger(),
 	})
 
-	v, ok := os.LookupEnv("TF_TEST_SCENARIO")
-
-	if ok {
-		log.Info().Msgf("Scenario - %s", v)
-	} else {
-		log.Info().Msg("Scenario not set")
-	}
-
 	if len(scenarios) == 0 {
 		scenarios = append(scenarios, Scenario{
 			Name: "main",
 		})
 	}
 
-	for _, s := range scenarios {
-		name := cases.Title(language.English).String(s.Name)
-		t.Run(name, func(t *testing.T) {
-			scenarioTest(t, conf, s, vals)
-		})
-	}
-}
+	runScenario, ok := os.LookupEnv("TF_TEST_SCENARIO")
 
-func DirExists(path string) (bool, error) {
-	info, err := os.Stat(path)
-	if err == nil {
-		// Path exists, check if it is a directory
-		return info.IsDir(), nil
+	if ok {
+		log.Info().Msgf("Scenario - %s", runScenario)
+	} else {
+		log.Info().Msg("Scenario not set, running all")
+		runScenario = "all"
 	}
-	if errors.Is(err, os.ErrNotExist) {
-		// Path does not exist
-		return false, nil
+
+	for _, s := range scenarios {
+		if runScenario == "all" || s.Name == runScenario {
+			name := cases.Title(language.English).String(s.Name)
+			t.Run(name, func(t *testing.T) {
+				scenarioTest(t, conf, s, vals)
+			})
+		} else {
+			log.Info().Msgf("Skipping scenarion %s", s.Name)
+		}
 	}
-	// Some other error occurred (e.g., permission denied)
-	return false, err
 }
 
 func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation) {
@@ -127,16 +117,6 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 	scenario.ModulePath = modulePath
 	scenario.TempPath = tempPath
 	scenario.ScenarioPath = scenarioPath
-
-	scenarioRunDir := filepath.Join(scenarioPath, conf.RunDir)
-
-	tfOpts := &terraform.Options{
-		TerraformBinary: "tofu",
-		TerraformDir: scenarioRunDir,
-		// Vars:         tfVars,
-	}
-
-	scenario.TFOpts = tfOpts
 
 	t.Run("BuildScenario", func(t *testing.T) {
 		// Create sceario dir if necessary
@@ -182,6 +162,23 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 			}
 		}
 	})
+
+	scenarioRunDir := filepath.Join(scenarioPath, conf.RunDir)
+
+	d, err := os.Stat(filepath.Join(scenarioRunDir, scenario.Name))
+	if err == nil && d.IsDir() {
+		scenarioRunDir = filepath.Join(scenarioRunDir, scenario.Name)
+	}
+
+	log.Info().Msgf("Run TF in %s", scenarioRunDir)
+
+	tfOpts := &terraform.Options{
+		TerraformBinary: "tofu",
+		TerraformDir:    scenarioRunDir,
+		// Vars:         tfVars,
+	}
+
+	scenario.TFOpts = tfOpts
 
 	// Defer destroy early in case apply failed
 	defer t.Run("Destroy", func(t *testing.T) {
