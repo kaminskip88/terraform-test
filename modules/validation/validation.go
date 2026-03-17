@@ -15,7 +15,7 @@ import (
 )
 
 func RunInspecDocker(t *testing.T, s basic.Scenario, spec string, user string, sudo bool) {
-	target := terraform.OutputRequired(t, s.TFOpts, "ipv4_address_public")
+	target := terraform.OutputRequired(t, s.TFOpts, "ip_address")
 	sshKey := terraform.OutputRequired(t, s.TFOpts, "ssh_key_priv")
 
 	sshKeyPath := filepath.Join(s.ScenarioPath, "ssh_priv")

@@ -212,7 +212,7 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 		v, ok := os.LookupEnv("TF_TEST_SCENARIO")
 		if ok && v == scenario.Name {
 			t.Run("ssh", func(t *testing.T) {
-				target := terraform.OutputRequired(t, scenario.TFOpts, "ipv4_address_public")
+				target := terraform.OutputRequired(t, scenario.TFOpts, "ip_address")
 				sshKey := terraform.OutputRequired(t, scenario.TFOpts, "ssh_key_priv")
 				sshUser := terraform.OutputRequired(t, scenario.TFOpts, "ssh_user")
 
