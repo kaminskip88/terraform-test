@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/gruntwork-io/terratest/modules/files"
@@ -20,12 +21,17 @@ import (
 type Conf struct {
 	TmpDir string
 	RunDir string
+	IgnoredPaths []string
 }
 
 func DefaultConf() *Conf {
 	return &Conf{
 		TmpDir: ".terratest",
 		RunDir: "examples",
+		IgnoredPaths: []string{
+			"images",
+			"tests",
+		},
 	}
 }
 
@@ -151,7 +157,8 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 			// filter files
 			fileFilter := func(path string) bool {
 				return !files.PathContainsHiddenFileOrFolder(path) &&
-					!files.PathContainsTerraformStateOrVars(path)
+					!files.PathContainsTerraformStateOrVars(path) &&
+					!PathContainsIgnoredPath(path, conf)
 			}
 
 			log.Info().Msg("populate scenario folder")
@@ -246,5 +253,31 @@ func utilFilter(name string) bool {
 			return true
 		}
 	}
+	return false
+}
+
+
+func PathContainsIgnoredPath(path string, conf *Conf) bool {
+	if conf == nil || len(conf.IgnoredPaths) == 0 {
+		return false
+	}
+
+	cleanPath := filepath.Clean(path)
+	sep := string(filepath.Separator)
+	pathWithSeps := sep + cleanPath + sep
+
+	for _, ignoredPath := range conf.IgnoredPaths {
+		ignored := strings.TrimSpace(ignoredPath)
+		if ignored == "" {
+			continue
+		}
+
+		cleanIgnored := filepath.Clean(ignored)
+		ignoredWithSeps := sep + cleanIgnored + sep
+		if strings.Contains(pathWithSeps, ignoredWithSeps) {
+			return true
+		}
+	}
+
 	return false
 }
