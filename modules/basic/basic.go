@@ -77,6 +77,10 @@ func Run(t *testing.T, conf *Conf, scenarios []Scenario, vals []Validation) {
 		})
 	}
 
+	if err := validateStage(os.Getenv("TF_TEST_STAGE")); err != nil {
+		require.NoError(t, err)
+	}
+
 	runScenario, ok := os.LookupEnv("TF_TEST_SCENARIO")
 
 	if ok {
@@ -86,15 +90,14 @@ func Run(t *testing.T, conf *Conf, scenarios []Scenario, vals []Validation) {
 		runScenario = "all"
 	}
 
-	for _, s := range scenarios {
-		if runScenario == "all" || s.Name == runScenario {
-			name := cases.Title(language.English).String(s.Name)
-			t.Run(name, func(t *testing.T) {
-				scenarioTest(t, conf, s, vals)
-			})
-		} else {
-			log.Info().Msgf("Skipping scenarion %s", s.Name)
-		}
+	selected, err := selectScenarios(scenarios, runScenario)
+	require.NoError(t, err)
+
+	for _, s := range selected {
+		name := cases.Title(language.English).String(s.Name)
+		t.Run(name, func(t *testing.T) {
+			scenarioTest(t, conf, s, vals)
+		})
 	}
 }
 
@@ -215,25 +218,20 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 
 	// Utility steps
 
-	if utilFilter("ssh") {
-		v, ok := os.LookupEnv("TF_TEST_SCENARIO")
-		if ok && v == scenario.Name {
-			t.Run("ssh", func(t *testing.T) {
-				target := terraform.OutputRequired(t, scenario.TFOpts, "ip_address")
-				sshKey := terraform.OutputRequired(t, scenario.TFOpts, "ssh_key_priv")
-				sshUser := terraform.OutputRequired(t, scenario.TFOpts, "ssh_user")
+	if sshRequested(os.Getenv("TF_TEST_STAGE"), os.Getenv("TF_TEST_SCENARIO"), scenario.Name) {
+		t.Run("ssh", func(t *testing.T) {
+			target := terraform.OutputRequired(t, scenario.TFOpts, "ip_address")
+			sshKey := terraform.OutputRequired(t, scenario.TFOpts, "ssh_key_priv")
+			sshUser := terraform.OutputRequired(t, scenario.TFOpts, "ssh_user")
 
-				sshKeyPath := filepath.Join(scenario.ScenarioPath, "ssh_priv_cmd")
-				err := os.WriteFile(sshKeyPath, []byte(sshKey), 0o600)
-				require.NoError(t, err)
-				// i dont know how to run interractive shell from tests as go tests are noniteractive
-				// so it just prints the ssh command
-				log.Info().Msg("-==SSH COMMAND HELPER==-")
-				fmt.Printf("ssh -o IdentitiesOnly=yes -i %s %s@%s \n", sshKeyPath, sshUser, target)
-			})
-		} else {
-			log.Info().Msgf("skipping scenarion %s", scenario.Name)
-		}
+			sshKeyPath := filepath.Join(scenario.ScenarioPath, "ssh_priv_cmd")
+			err := os.WriteFile(sshKeyPath, []byte(sshKey), 0o600)
+			require.NoError(t, err)
+			// i dont know how to run interractive shell from tests as go tests are noniteractive
+			// so it just prints the ssh command
+			log.Info().Msg("-==SSH COMMAND HELPER==-")
+			fmt.Printf("ssh -o IdentitiesOnly=yes -i %s %s@%s \n", sshKeyPath, sshUser, target)
+		})
 	}
 }
 
@@ -252,6 +250,45 @@ func utilFilter(name string) bool {
 		if v == name {
 			return true
 		}
+	}
+	return false
+}
+
+func selectScenarios(scenarios []Scenario, filter string) ([]Scenario, error) {
+	if filter == "" || filter == "all" {
+		return scenarios, nil
+	}
+
+	var selected []Scenario
+	for _, s := range scenarios {
+		if s.Name == filter {
+			selected = append(selected, s)
+		}
+	}
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("TF_TEST_SCENARIO=%q matched no scenarios", filter)
+	}
+	return selected, nil
+}
+
+func validateStage(stage string) error {
+	if stage == "" {
+		return nil
+	}
+	switch stage {
+	case "apply", "validate", "destroy", "build_scenario", "ssh":
+		return nil
+	default:
+		return fmt.Errorf("unknown TF_TEST_STAGE=%q (want apply, validate, destroy, build_scenario, ssh)", stage)
+	}
+}
+
+func sshRequested(stage, scenarioFilter, scenarioName string) bool {
+	if stage != "ssh" {
+		return false
+	}
+	if scenarioFilter == "" || scenarioFilter == "all" || scenarioFilter == scenarioName {
+		return true
 	}
 	return false
 }
