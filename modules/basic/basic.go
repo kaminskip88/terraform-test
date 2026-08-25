@@ -42,9 +42,21 @@ type Scenario struct {
 	TempPath     string
 	ScenarioPath string
 	TFOpts       *terraform.Options
+	Prepare      []Prepare
+	Teardown     []Teardown
 }
 
 type Validation struct {
+	Name string
+	Func func(*testing.T, Scenario)
+}
+
+type Prepare struct {
+	Name string
+	Func func(*testing.T, Scenario)
+}
+
+type Teardown struct {
 	Name string
 	Func func(*testing.T, Scenario)
 }
@@ -61,7 +73,7 @@ func (l *zerologTestLogger) Logf(t terratest_testing.TestingT, format string, ar
 	l.log.Debug().Msgf(format, args...)
 }
 
-func Run(t *testing.T, conf *Conf, scenarios []Scenario, vals []Validation) {
+func Run(t *testing.T, conf *Conf, scenarios []Scenario, prepares []Prepare, teardowns []Teardown, vals []Validation) {
 	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	terratest_logger.Default = terratest_logger.New(&zerologTestLogger{
 		log: zerolog.New(zerolog.ConsoleWriter{Out: os.Stdout}).
@@ -96,16 +108,15 @@ func Run(t *testing.T, conf *Conf, scenarios []Scenario, vals []Validation) {
 	for _, s := range selected {
 		name := cases.Title(language.English).String(s.Name)
 		t.Run(name, func(t *testing.T) {
-			scenarioTest(t, conf, s, vals)
+			scenarioTest(t, conf, s, prepares, teardowns, vals)
 		})
 	}
 }
 
-func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation) {
+func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, prepares []Prepare, teardowns []Teardown, vals []Validation) {
 	log := log.With().Str("scenario", scenario.Name).Logger()
 	// t.Parallel()
 
-	// get paths
 	testDir, err := os.Getwd()
 	if err != nil {
 		require.NoError(t, err)
@@ -122,25 +133,21 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 
 	scenarioPath := filepath.Join(tempPath, scenarioSrc)
 
-	// set attributes to pass to validations
 	scenario.ModulePath = modulePath
 	scenario.TempPath = tempPath
 	scenario.ScenarioPath = scenarioPath
 
 	t.Run("BuildScenario", func(t *testing.T) {
-		// Create sceario dir if necessary
 		d, err := os.Stat(scenarioPath)
 		if err == nil && d.IsDir() {
 			log.Info().Msg("using existing scenario folder")
 		} else {
 			log.Info().Msg("creating scenario folder")
-			// make temp dir
 			if err := os.MkdirAll(scenarioPath, 0755); err != nil {
 				require.NoError(t, err)
 			}
 		}
 
-		// Populate scenario folder if necessary
 		var copyRequired bool
 		v, ok := os.LookupEnv("TF_TEST_STAGE")
 		if ok && v == "build_scenario" {
@@ -157,7 +164,6 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 		}
 
 		if copyRequired {
-			// filter files
 			fileFilter := func(path string) bool {
 				return !files.PathContainsHiddenFileOrFolder(path) &&
 					!files.PathContainsTerraformStateOrVars(path) &&
@@ -165,7 +171,6 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 			}
 
 			log.Info().Msg("populate scenario folder")
-			// copy files to temp dir
 			err = files.CopyFolderContentsWithFilter(modulePath, scenarioPath, fileFilter)
 			if err != nil {
 				require.NoError(t, err)
@@ -185,20 +190,56 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 	tfOpts := &terraform.Options{
 		TerraformBinary: "tofu",
 		TerraformDir:    scenarioRunDir,
-		// Vars:         tfVars,
 	}
 
 	scenario.TFOpts = tfOpts
 
-	// Defer destroy early in case apply failed
+	prepHooks := collectPrepareHooks(prepares, scenario)
+	tdHooks := collectTeardownHooks(teardowns, scenario)
+	stage := os.Getenv("TF_TEST_STAGE")
+
+	if len(tdHooks) > 0 {
+		defer t.Run("Teardown", func(t *testing.T) {
+			filter(t, "teardown")
+			for _, h := range tdHooks {
+				h := h
+				t.Run(h.Name, func(t *testing.T) {
+					h.Func(t, scenario)
+				})
+			}
+			if shouldRemoveTempDir(stage, "teardown", len(tdHooks)) {
+				err := os.RemoveAll(scenarioPath)
+				require.NoError(t, err)
+			}
+		})
+	}
+
 	defer t.Run("Destroy", func(t *testing.T) {
 		filter(t, "destroy")
 		terraform.Destroy(t, tfOpts)
-
-		// remove temp folder
-		err := os.RemoveAll(scenarioPath)
-		require.NoError(t, err)
+		if shouldRemoveTempDir(stage, "destroy", len(tdHooks)) {
+			err := os.RemoveAll(scenarioPath)
+			require.NoError(t, err)
+		}
 	})
+
+	if len(prepHooks) > 0 {
+		t.Run("Prepare", func(t *testing.T) {
+			filter(t, "prepare")
+			for _, p := range prepHooks {
+				p := p
+				t.Run(p.Name, func(t *testing.T) {
+					p.Func(t, scenario)
+				})
+				if t.Failed() {
+					return
+				}
+			}
+		})
+		if t.Failed() {
+			return
+		}
+	}
 
 	t.Run("Apply", func(t *testing.T) {
 		filter(t, "apply")
@@ -216,8 +257,6 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 		}
 	})
 
-	// Utility steps
-
 	if sshRequested(os.Getenv("TF_TEST_STAGE"), os.Getenv("TF_TEST_SCENARIO"), scenario.Name) {
 		t.Run("ssh", func(t *testing.T) {
 			target := terraform.OutputRequired(t, scenario.TFOpts, "ip_address")
@@ -227,11 +266,41 @@ func scenarioTest(t *testing.T, conf *Conf, scenario Scenario, vals []Validation
 			sshKeyPath := filepath.Join(scenario.ScenarioPath, "ssh_priv_cmd")
 			err := os.WriteFile(sshKeyPath, []byte(sshKey), 0o600)
 			require.NoError(t, err)
-			// i dont know how to run interractive shell from tests as go tests are noniteractive
-			// so it just prints the ssh command
 			log.Info().Msg("-==SSH COMMAND HELPER==-")
 			fmt.Printf("ssh -o IdentitiesOnly=yes -i %s %s@%s \n", sshKeyPath, sshUser, target)
 		})
+	}
+}
+
+func collectPrepareHooks(shared []Prepare, scenario Scenario) []Prepare {
+	out := make([]Prepare, 0, len(shared)+len(scenario.Prepare))
+	out = append(out, shared...)
+	out = append(out, scenario.Prepare...)
+	return out
+}
+
+func collectTeardownHooks(shared []Teardown, scenario Scenario) []Teardown {
+	out := make([]Teardown, 0, len(shared)+len(scenario.Teardown))
+	for i := len(scenario.Teardown) - 1; i >= 0; i-- {
+		out = append(out, scenario.Teardown[i])
+	}
+	for i := len(shared) - 1; i >= 0; i-- {
+		out = append(out, shared[i])
+	}
+	return out
+}
+
+func shouldRemoveTempDir(stage string, after string, teardownHookCount int) bool {
+	switch after {
+	case "destroy":
+		if stage == "destroy" {
+			return true
+		}
+		return stage == "" && teardownHookCount == 0
+	case "teardown":
+		return stage == "" && teardownHookCount > 0
+	default:
+		return false
 	}
 }
 
@@ -276,10 +345,10 @@ func validateStage(stage string) error {
 		return nil
 	}
 	switch stage {
-	case "apply", "validate", "destroy", "build_scenario", "ssh":
+	case "apply", "validate", "destroy", "build_scenario", "ssh", "prepare", "teardown":
 		return nil
 	default:
-		return fmt.Errorf("unknown TF_TEST_STAGE=%q (want apply, validate, destroy, build_scenario, ssh)", stage)
+		return fmt.Errorf("unknown TF_TEST_STAGE=%q (want apply, validate, destroy, build_scenario, ssh, prepare, teardown)", stage)
 	}
 }
 
